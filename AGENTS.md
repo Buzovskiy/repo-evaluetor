@@ -2,7 +2,7 @@
 
 ## Source of truth
 
-This repository is a take-home exercise for Simfoni Product Engineering.
+This repository is a take-home exercise.
 
 **Read `docs/ASSIGNMENT.md` before planning or making changes.** It contains the assignment requirements and constraints. Do not modify it unless explicitly requested.
 

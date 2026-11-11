@@ -1,7 +1,5 @@
 # Take-home exercise: repository evaluation
 
-Simfoni — Product Engineering
-
 ## The problem
 
 Your team is about to take on a new open-source dependency. Someone has to decide whether that's a good idea — not “does it work today”, but “will we regret this in two years.”
