@@ -1,8 +1,9 @@
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase
+from django.core.cache import cache
 
 from backend.evaluator import RepositoryEvaluator
 from backend.github import (
@@ -67,9 +68,65 @@ class RepositoryEvaluatorTests(SimpleTestCase):
                 self.commits(12)
                 self.github.get_commits.return_value.commits[0]["author"] = author
                 self.assertEqual(self.evaluate()["metrics"]["concentration"]["status"], "unknown")
-        for count, more in [(9, False), (100, True)]:
+        for count, more in [(0, False), (9, False), (9, True)]:
             self.commits(count, more)
-            self.assertIsNone(self.evaluate()["metrics"]["concentration"]["value"])
+            result = self.evaluate()["metrics"]["concentration"]
+            self.assertIsNone(result["value"])
+            self.assertEqual(result["sample_size"], count)
+            self.assertEqual(result["is_sample"], more)
+
+    def test_concentration_sample_metadata_and_thresholds(self):
+        for size, more, largest, expected in [
+            (10, False, 4, "healthy"), (50, False, 30, "warning"),
+            (100, False, 35, "healthy"), (100, True, 35, "healthy"),
+            (100, True, 50, "warning"), (100, True, 80, "critical"),
+        ]:
+            with self.subTest(size=size, more=more, largest=largest):
+                self.github.reset_mock()
+                authors = [1] * largest + list(range(2, size - largest + 2))
+                self.github.get_commits.return_value = CommitPage(
+                    [{"author": {"id": identity}} for identity in authors], more)
+                result = self.evaluate()
+                concentration = result["metrics"]["concentration"]
+                self.assertEqual(concentration["status"], expected)
+                self.assertEqual(concentration["value"], round(largest / size * 100, 1))
+                self.assertEqual(concentration["sample_size"], size)
+                self.assertEqual(concentration["is_sample"], more)
+                self.assertEqual(result["meta"]["commits_complete"], not more)
+                self.assertEqual(result["assessment"]["status"], expected)
+                if more:
+                    self.assertIn("sample", concentration["message"])
+                    self.assertIn("sample", result["assessment"]["summary"])
+                    self.assertIn("not the complete 90-day history", concentration["message"])
+                else:
+                    self.assertIn(f"the {size} commits analyzed", concentration["message"])
+                self.github.get_commits.assert_called_once_with(
+                    "a", "b", since=self.now - timedelta(days=90), until=self.now, page=1)
+                self.github.get_repository.assert_called_once()
+                self.github.get_latest_release.assert_called_once()
+
+    def test_unattributed_sample_retains_metadata(self):
+        self.commits(100, True)
+        del self.github.get_commits.return_value.commits[-1]["author"]
+        result = self.evaluate()["metrics"]["concentration"]
+        self.assertEqual(result["status"], "unknown")
+        self.assertIsNone(result["value"])
+        self.assertEqual(result["sample_size"], 100)
+        self.assertTrue(result["is_sample"])
+
+    def test_api_serializes_sample_result(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.commits(100, True)
+        with patch("backend.views.RepositoryEvaluator", return_value=self.evaluator):
+            response = self.client.get("/api/evaluate/", {"repo": "a/b"})
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(set(data), {"repository", "assessment", "metrics", "meta"})
+        self.assertEqual(data["metrics"]["concentration"]["sample_size"], 100)
+        self.assertTrue(data["metrics"]["concentration"]["is_sample"])
+        self.assertFalse(data["meta"]["commits_complete"])
+        self.github.get_commits.assert_called_once()
 
     def test_account_ids_ignore_names_and_committers(self):
         self.commits(12)
@@ -140,6 +197,8 @@ class RepositoryEvaluatorTests(SimpleTestCase):
             self.assertEqual(result["metrics"][name]["status"], "unknown")
             self.assertIsNone(result["metrics"][name]["value"])
         self.assertIsNone(result["meta"]["commits_complete"])
+        self.assertEqual(result["metrics"]["concentration"]["sample_size"], 0)
+        self.assertFalse(result["metrics"]["concentration"]["is_sample"])
         self.assertEqual(result["meta"]["errors"], [
             {"endpoint": "commits", "type": "RateLimitExceeded", "status": 429,
              "rate_limit_headers": headers},

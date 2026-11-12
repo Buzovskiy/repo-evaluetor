@@ -3,6 +3,7 @@
 from calendar import monthrange
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from .github import GitHubClient, GitHubError, LatestReleaseNotFound
 
@@ -26,28 +27,37 @@ def months_before(now, months):
                        day=min(now.day, monthrange(year, month)[1]))
 
 
-def concentration(commits, complete):
+def concentration(commits, complete) -> dict[str, Any]:
     """Use stable GitHub author IDs only, never names, emails, or committers.
 
     Any unlinked author makes this metric unknown: mixing account IDs with
     email fallbacks can split one person into multiple apparent contributors.
     Accounts (including bots) are a proxy for people, not verified identities.
     """
-    if not complete or len(commits) < 10:
-        return metric("unknown", None, "percent",
-                      "Concentration requires at least 10 commits and complete history.")
+    size = len(commits)
+
+    def result(status, value, message):
+        return dict(metric(status, value, "percent", message),
+                    sample_size=size, is_sample=not complete)
+
+    if size < 10:
+        return result("unknown", None, "Concentration requires at least 10 commits.")
     authors = []
     for commit in commits:
         author = commit.get("author")
         identity = author.get("id") if isinstance(author, dict) else None
         if type(identity) is not int or identity <= 0:
-            return metric("unknown", None, "percent",
+            return result("unknown", None,
                           "Reliable GitHub author attribution is unavailable.")
         authors.append(identity)
     percentage = max(Counter(authors).values()) / len(commits) * 100
     status = "healthy" if percentage < 50 else "warning" if percentage < 80 else "critical"
-    return metric(status, round(percentage, 1), "percent",
-                  f"One contributor authored {percentage:.1f}% of recent commits.")
+    if complete:
+        message = f"One contributor authored {percentage:.1f}% of the {size} commits analyzed in the last 90 days."
+    else:
+        message = (f"One contributor authored {percentage:.1f}% of the latest {size} commits. "
+                   "This is a sample, not the complete 90-day history.")
+    return result(status, round(percentage, 1), message)
 
 
 def release_metric(value, now):
@@ -107,6 +117,8 @@ class RepositoryEvaluator:
             record_error("commits", error)
             maintenance = metric("unknown", None, "commits", "Recent commits could not be retrieved.")
             concentrated = metric("unknown", None, "percent", "Recent commits could not be retrieved.")
+            # No commits were examined and pagination could not be established.
+            concentrated.update(sample_size=0, is_sample=False)
 
         try:
             release = release_metric(self.client.get_latest_release(owner, repo).get("published_at"), now)
@@ -131,6 +143,8 @@ class RepositoryEvaluator:
                        if any(item["status"] == status for item in metrics.values()))
         if overall == "healthy":
             summary = "No major maintenance-risk signals were detected by these heuristics; security and suitability are not established."
+            if concentrated["is_sample"]:
+                summary += " Contributor concentration covers only the latest commit sample, not the complete 90-day history."
         else:
             summary = " ".join(item["message"] for item in metrics.values()
                                if item["status"] == overall)
