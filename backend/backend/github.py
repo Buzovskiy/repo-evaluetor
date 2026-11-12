@@ -145,6 +145,25 @@ class GitHubClient:
             raise ValueError("GitHub timestamps must be between 1970 and 2099")
         return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
+    def get_tags(self, owner, repo):
+        """Only the first 100 tags; no ordering or completeness guarantee."""
+        data, _ = self._get(self._path(owner, repo) + "/tags",
+                            params={"per_page": 100, "page": 1})
+        if not isinstance(data, list):
+            raise InvalidResponse("GitHub returned an unexpected tag list")
+        for tag in data:
+            self._object(tag, {"name": str, "commit": dict})
+            self._object(tag["commit"], {"sha": str})
+            if not tag["commit"]["sha"]:
+                raise InvalidResponse("GitHub returned an empty tag commit")
+        return data
+
+    def get_commit(self, owner, repo, ref):
+        data, _ = self._get(self._path(owner, repo) + "/commits/" + quote(ref, safe=""),
+                            missing=GitHubError)
+        self._object(data, {"sha": str, "commit": dict})
+        return data
+
     def get_commits(self, owner, repo, *, since: datetime, until=None, page=1):
         """One default-branch page. Repeat with page+1 only when has_next is true."""
         if type(page) is not int or page < 1:

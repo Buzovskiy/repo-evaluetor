@@ -1,9 +1,8 @@
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from django.test import SimpleTestCase
-from django.core.cache import cache
 
 from backend.evaluator import RepositoryEvaluator
 from backend.github import (
@@ -22,6 +21,7 @@ class RepositoryEvaluatorTests(SimpleTestCase):
         }
         self.now = datetime(2026, 11, 12, tzinfo=timezone.utc)
         self.github.get_latest_release.return_value = {"published_at": "2026-10-01T00:00:00Z"}
+        self.github.get_tags.return_value = []
         self.commits(12)
         self.evaluator = RepositoryEvaluator(self.github)
 
@@ -49,90 +49,6 @@ class RepositoryEvaluatorTests(SimpleTestCase):
         self.assertEqual(self.github.get_commits.call_count, 7)
         self.github.get_commits.assert_called_with(
             "a", "b", since=self.now - timedelta(days=90), until=self.now, page=1)
-
-    def test_concentration_boundaries(self):
-        for largest, total, expected in [(4, 10, "healthy"), (5, 10, "warning"),
-                                          (7, 10, "warning"), (8, 10, "critical"),
-                                          (79, 99, "warning")]:
-            with self.subTest(largest=largest, total=total):
-                authors = [1] * largest + list(range(2, total - largest + 2))
-                self.github.get_commits.return_value = CommitPage(
-                    [{"author": {"id": identity}} for identity in authors], False)
-                result = self.evaluate()["metrics"]["concentration"]
-                self.assertEqual(result["status"], expected)
-                self.assertEqual(result["value"], round(largest / total * 100, 1))
-
-    def test_unreliable_concentration(self):
-        for author in [None, {}, {"login": "a"}, {"id": "1"}, {"id": True}]:
-            with self.subTest(author=author):
-                self.commits(12)
-                self.github.get_commits.return_value.commits[0]["author"] = author
-                self.assertEqual(self.evaluate()["metrics"]["concentration"]["status"], "unknown")
-        for count, more in [(0, False), (9, False), (9, True)]:
-            self.commits(count, more)
-            result = self.evaluate()["metrics"]["concentration"]
-            self.assertIsNone(result["value"])
-            self.assertEqual(result["sample_size"], count)
-            self.assertEqual(result["is_sample"], more)
-
-    def test_concentration_sample_metadata_and_thresholds(self):
-        for size, more, largest, expected in [
-            (10, False, 4, "healthy"), (50, False, 30, "warning"),
-            (100, False, 35, "healthy"), (100, True, 35, "healthy"),
-            (100, True, 50, "warning"), (100, True, 80, "critical"),
-        ]:
-            with self.subTest(size=size, more=more, largest=largest):
-                self.github.reset_mock()
-                authors = [1] * largest + list(range(2, size - largest + 2))
-                self.github.get_commits.return_value = CommitPage(
-                    [{"author": {"id": identity}} for identity in authors], more)
-                result = self.evaluate()
-                concentration = result["metrics"]["concentration"]
-                self.assertEqual(concentration["status"], expected)
-                self.assertEqual(concentration["value"], round(largest / size * 100, 1))
-                self.assertEqual(concentration["sample_size"], size)
-                self.assertEqual(concentration["is_sample"], more)
-                self.assertEqual(result["meta"]["commits_complete"], not more)
-                self.assertEqual(result["assessment"]["status"], expected)
-                if more:
-                    self.assertIn("sample", concentration["message"])
-                    self.assertIn("sample", result["assessment"]["summary"])
-                    self.assertIn("not the complete 90-day history", concentration["message"])
-                else:
-                    self.assertIn(f"the {size} commits analyzed", concentration["message"])
-                self.github.get_commits.assert_called_once_with(
-                    "a", "b", since=self.now - timedelta(days=90), until=self.now, page=1)
-                self.github.get_repository.assert_called_once()
-                self.github.get_latest_release.assert_called_once()
-
-    def test_unattributed_sample_retains_metadata(self):
-        self.commits(100, True)
-        del self.github.get_commits.return_value.commits[-1]["author"]
-        result = self.evaluate()["metrics"]["concentration"]
-        self.assertEqual(result["status"], "unknown")
-        self.assertIsNone(result["value"])
-        self.assertEqual(result["sample_size"], 100)
-        self.assertTrue(result["is_sample"])
-
-    def test_api_serializes_sample_result(self):
-        cache.clear()
-        self.addCleanup(cache.clear)
-        self.commits(100, True)
-        with patch("backend.views.RepositoryEvaluator", return_value=self.evaluator):
-            response = self.client.get("/api/evaluate/", {"repo": "a/b"})
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(set(data), {"repository", "assessment", "metrics", "meta"})
-        self.assertEqual(data["metrics"]["concentration"]["sample_size"], 100)
-        self.assertTrue(data["metrics"]["concentration"]["is_sample"])
-        self.assertFalse(data["meta"]["commits_complete"])
-        self.github.get_commits.assert_called_once()
-
-    def test_account_ids_ignore_names_and_committers(self):
-        self.commits(12)
-        for index, commit in enumerate(self.github.get_commits.return_value.commits):
-            commit["author"]["login"] = f"renamed-{index}"
-        self.assertEqual(self.evaluate()["metrics"]["concentration"]["value"], 33.3)
 
     def test_release_boundaries(self):
         for date, expected in [
@@ -193,12 +109,10 @@ class RepositoryEvaluatorTests(SimpleTestCase):
         self.github.get_commits.side_effect = RateLimitExceeded("limited", status=429, headers=headers)
         self.github.get_latest_release.side_effect = GitHubServerError("failed", status=503)
         result = self.evaluate()
-        for name in ("maintenance", "concentration", "release"):
+        for name in ("maintenance", "release"):
             self.assertEqual(result["metrics"][name]["status"], "unknown")
             self.assertIsNone(result["metrics"][name]["value"])
         self.assertIsNone(result["meta"]["commits_complete"])
-        self.assertEqual(result["metrics"]["concentration"]["sample_size"], 0)
-        self.assertFalse(result["metrics"]["concentration"]["is_sample"])
         self.assertEqual(result["meta"]["errors"], [
             {"endpoint": "commits", "type": "RateLimitExceeded", "status": 429,
              "rate_limit_headers": headers},
@@ -216,3 +130,84 @@ class RepositoryEvaluatorTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             self.evaluator.evaluate("a", "b", now=datetime(2026, 1, 1))
         self.github.get_repository.assert_not_called()
+
+    def test_three_metrics_and_primary_source(self):
+        self.github.get_latest_release.return_value["tag_name"] = "v2.0"
+        result = self.evaluate()
+        self.assertEqual(set(result["metrics"]), {"maintenance", "release", "archived"})
+        self.assertNotIn("sample_size", json.dumps(result))
+        self.assertNotIn("is_sample", json.dumps(result))
+        self.assertEqual(result["assessment"]["status"], "healthy")
+        self.assertEqual(result["metrics"]["release"]["source"], "github_release")
+        self.assertEqual(result["metrics"]["release"]["version"], "v2.0")
+        self.github.get_tags.assert_not_called()
+        self.github.get_commit.assert_not_called()
+
+    def test_tag_selection_and_fallback_triggers(self):
+        for primary in [None, "bad", "2027-01-01T00:00:00Z", "missing"]:
+            with self.subTest(primary=primary):
+                self.github.reset_mock()
+                self.github.get_latest_release.side_effect = (
+                    LatestReleaseNotFound("missing") if primary == "missing" else None)
+                self.github.get_latest_release.return_value = {"published_at": primary}
+                self.github.get_tags.return_value = [
+                    {"name": name, "commit": {"sha": name}}
+                    for name in ["5.2.8", "v6.0.1", "6.0.0", "6.1-rc1", "nightly", "release-9", "6..2"]
+                ]
+                self.github.get_commit.return_value = {"commit": {
+                    "committer": {"date": "2026-10-01T02:00:00+02:00"},
+                    "author": {"date": "2000-01-01T00:00:00Z"}}}
+                release = self.evaluate()["metrics"]["release"]
+                self.assertEqual(release["source"], "git_tag")
+                self.assertEqual(release["version"], "v6.0.1")
+                self.assertEqual(release["value"], "2026-10-01T00:00:00Z")
+                self.assertEqual(release["status"], "healthy")
+                self.assertIn("not the tag publication date", release["message"])
+                self.github.get_tags.assert_called_once_with("a", "b")
+                self.github.get_commit.assert_called_once_with("a", "b", "v6.0.1")
+
+    def test_no_recognized_tags(self):
+        for names in [[], ["1.2-alpha", "1.2-beta", "1.2-rc1", "dev"],
+                      ["release", "1..2", "v", "123", "1.2.3.4.5"]]:
+            self.github.get_latest_release.side_effect = LatestReleaseNotFound("missing")
+            self.github.get_tags.return_value = [
+                {"name": name, "commit": {"sha": "abc"}} for name in names]
+            release = self.evaluate()["metrics"]["release"]
+            self.assertEqual(release["status"], "unknown")
+            self.assertIsNone(release["source"])
+            self.assertIsNone(release["version"])
+        self.github.get_commit.assert_not_called()
+
+    def test_tag_dates(self):
+        self.github.get_latest_release.return_value = {"published_at": None}
+        self.github.get_tags.return_value = [{"name": "1.2", "commit": {"sha": "abc"}}]
+        for date, expected in [(None, "unknown"), ("bad", "unknown"),
+                               ("2027-01-01T00:00:00Z", "unknown"),
+                               ("2026-05-12T00:00:00Z", "warning"),
+                               ("2025-11-12T00:00:00Z", "critical")]:
+            self.github.get_commit.return_value = {"commit": {"committer": {"date": date}}}
+            self.assertEqual(self.evaluate()["metrics"]["release"]["status"], expected)
+        self.github.get_commit.return_value = {"commit": {"committer": None}}
+        self.assertEqual(self.evaluate()["metrics"]["release"]["status"], "unknown")
+
+    def test_upstream_errors_do_not_trigger_more_discovery(self):
+        from backend.github import GitHubNetworkError
+        for kind in [RateLimitExceeded, GitHubNetworkError, GitHubServerError]:
+            self.github.reset_mock()
+            self.github.get_latest_release.side_effect = kind("failed", headers={"Retry-After": "60"})
+            result = self.evaluate()
+            self.assertEqual(result["meta"]["errors"][0]["type"], kind.__name__)
+            self.assertEqual(result["meta"]["errors"][0]["rate_limit_headers"], {"Retry-After": "60"})
+            self.github.get_tags.assert_not_called()
+            self.github.get_commit.assert_not_called()
+
+    def test_fallback_failures_preserved(self):
+        self.github.get_latest_release.side_effect = LatestReleaseNotFound("missing")
+        self.github.get_tags.side_effect = RateLimitExceeded("limited", status=429)
+        result = self.evaluate()
+        self.assertEqual(result["meta"]["errors"][0]["endpoint"], "tags")
+        self.github.get_commit.assert_not_called()
+        self.github.get_tags.side_effect = None
+        self.github.get_tags.return_value = [{"name": "1.2.3", "commit": {"sha": "abc"}}]
+        self.github.get_commit.side_effect = GitHubServerError("failed", status=503)
+        self.assertEqual(self.evaluate()["meta"]["errors"][0]["endpoint"], "tag_commit")

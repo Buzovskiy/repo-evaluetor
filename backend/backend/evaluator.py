@@ -1,8 +1,8 @@
 """Explainable maintenance heuristics, independent of HTTP and persistence."""
 
 from calendar import monthrange
-from collections import Counter
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
 
 from .github import GitHubClient, GitHubError, LatestReleaseNotFound
@@ -27,40 +27,7 @@ def months_before(now, months):
                        day=min(now.day, monthrange(year, month)[1]))
 
 
-def concentration(commits, complete) -> dict[str, Any]:
-    """Use stable GitHub author IDs only, never names, emails, or committers.
-
-    Any unlinked author makes this metric unknown: mixing account IDs with
-    email fallbacks can split one person into multiple apparent contributors.
-    Accounts (including bots) are a proxy for people, not verified identities.
-    """
-    size = len(commits)
-
-    def result(status, value, message):
-        return dict(metric(status, value, "percent", message),
-                    sample_size=size, is_sample=not complete)
-
-    if size < 10:
-        return result("unknown", None, "Concentration requires at least 10 commits.")
-    authors = []
-    for commit in commits:
-        author = commit.get("author")
-        identity = author.get("id") if isinstance(author, dict) else None
-        if type(identity) is not int or identity <= 0:
-            return result("unknown", None,
-                          "Reliable GitHub author attribution is unavailable.")
-        authors.append(identity)
-    percentage = max(Counter(authors).values()) / len(commits) * 100
-    status = "healthy" if percentage < 50 else "warning" if percentage < 80 else "critical"
-    if complete:
-        message = f"One contributor authored {percentage:.1f}% of the {size} commits analyzed in the last 90 days."
-    else:
-        message = (f"One contributor authored {percentage:.1f}% of the latest {size} commits. "
-                   "This is a sample, not the complete 90-day history.")
-    return result(status, round(percentage, 1), message)
-
-
-def release_metric(value, now):
+def release_metric(value: object, now, source="github_release", version=None) -> dict[str, Any]:
     try:
         if not isinstance(value, str):
             raise ValueError
@@ -71,14 +38,20 @@ def release_metric(value, now):
         if published > now:
             raise ValueError
     except (ValueError, OverflowError):
-        return metric("unknown", None, "date", "A valid release publication date is unavailable.")
+        return dict(metric("unknown", None, "date", "No reliable release freshness information is available."), source=None, version=None)
     if published > months_before(now, 6):
-        status, message = "healthy", "The latest stable release is less than 6 calendar months old."
+        status, message = "healthy", "The latest GitHub Release is less than 6 calendar months old."
     elif published > months_before(now, 12):
-        status, message = "warning", "The latest stable release is 6 to less than 12 calendar months old."
+        status, message = "warning", "The latest GitHub Release is 6 to less than 12 calendar months old."
     else:
-        status, message = "critical", "The latest stable release is at least 12 calendar months old."
-    return metric(status, published.isoformat().replace("+00:00", "Z"), "date", message)
+        status, message = "critical", "The latest GitHub Release is at least 12 calendar months old."
+    if source == "git_tag":
+        message = ("Freshness is estimated from the selected stable version tag's associated "
+                   "commit committer date, not the tag publication date. "
+                   "The highest recognized version in the first 100 tags may not be the latest published release.")
+    return dict(metric(status, published.isoformat().replace("+00:00", "Z"), "date", message),
+                source=source, version=version)
+
 
 
 class RepositoryEvaluator:
@@ -112,21 +85,40 @@ class RepositoryEvaluator:
             value = "100+" if page.has_next else count
             status = "healthy" if page.has_next or count >= 10 else "warning" if count else "critical"
             maintenance = metric(status, value, "commits", f"{value} commits in the last 90 days.")
-            concentrated = concentration(page.commits, complete)
         except GitHubError as error:
             record_error("commits", error)
             maintenance = metric("unknown", None, "commits", "Recent commits could not be retrieved.")
-            concentrated = metric("unknown", None, "percent", "Recent commits could not be retrieved.")
-            # No commits were examined and pagination could not be established.
-            concentrated.update(sample_size=0, is_sample=False)
 
+        release = release_metric(None, now)
+        release_endpoint = "releases/latest"
         try:
-            release = release_metric(self.client.get_latest_release(owner, repo).get("published_at"), now)
-        except LatestReleaseNotFound:
-            release = metric("unknown", None, "date", "No stable release is available; this does not imply abandonment.")
+            try:
+                latest = self.client.get_latest_release(owner, repo)
+            except LatestReleaseNotFound:
+                latest = {}
+            release = release_metric(latest.get("published_at"), now,
+                                     version=latest.get("tag_name"))
+            if release["status"] == "unknown":
+                release_endpoint = "tags"
+                tags = self.client.get_tags(owner, repo)
+                candidates = []
+                for tag in tags:
+                    # Two to four numeric components; no prerelease/build suffixes.
+                    match = re.fullmatch(r"v?([0-9]{1,9}(?:\.[0-9]{1,9}){1,3})", tag["name"])
+                    if match:
+                        parts = tuple(map(int, match[1].split(".")))
+                        candidates.append((parts + (0,) * (4 - len(parts)), tag["name"], tag))
+                if candidates:
+                    selected = max(candidates, key=lambda item: (item[0], item[1]))[2]
+                    release_endpoint = "tag_commit"
+                    commit = self.client.get_commit(owner, repo, selected["commit"]["sha"])
+                    committer = commit["commit"].get("committer")
+                    date = committer.get("date") if isinstance(committer, dict) else None
+                    release = release_metric(date, now, "git_tag", selected["name"])
         except GitHubError as error:
-            record_error("releases/latest", error)
-            release = metric("unknown", None, "date", "The latest stable release could not be retrieved.")
+            record_error(release_endpoint, error)
+            release = release_metric(None, now)
+            release["message"] = "Release freshness could not be retrieved from GitHub."
 
         archived = repository.get("archived")
         if type(archived) is not bool:
@@ -137,14 +129,12 @@ class RepositoryEvaluator:
             "Archive status is unavailable." if archived is None else
             "The repository is archived." if archived else "The repository is not archived.",
         )
-        metrics = dict(maintenance=maintenance, concentration=concentrated,
+        metrics = dict(maintenance=maintenance,
                        release=release, archived=archive_metric)
         overall = next(status for status in ("critical", "warning", "unknown", "healthy")
                        if any(item["status"] == status for item in metrics.values()))
         if overall == "healthy":
             summary = "No major maintenance-risk signals were detected by these heuristics; security and suitability are not established."
-            if concentrated["is_sample"]:
-                summary += " Contributor concentration covers only the latest commit sample, not the complete 90-day history."
         else:
             summary = " ".join(item["message"] for item in metrics.values()
                                if item["status"] == overall)

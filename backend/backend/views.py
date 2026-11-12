@@ -33,7 +33,8 @@ def evaluate(request):
             return upstream_error(error)
         errors = result["meta"].get("errors", [])
         # Metadata alone cannot provide an activity/release assessment.
-        if {"commits", "releases/latest"} <= {error["endpoint"] for error in errors}:
+        if (any(error["endpoint"] == "commits" for error in errors)
+                and any(error["endpoint"] in {"releases/latest", "tags", "tag_commit"} for error in errors)):
             priority = {"RateLimitExceeded": 0, "GitHubTimeout": 1}
             error = min(errors, key=lambda item: priority.get(item["type"], 2))
             return upstream_details(error["type"], error["rate_limit_headers"])

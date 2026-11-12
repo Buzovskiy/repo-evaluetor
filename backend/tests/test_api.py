@@ -19,6 +19,7 @@ class EvaluationApiTests(SimpleTestCase):
         self.addCleanup(cache.clear)
         github = Mock(spec=GitHubClient)
         github.get_repository.return_value = {"full_name": "django/django", "archived": False}
+        github.get_tags.return_value = []
         github.get_commits.return_value = CommitPage([], False)
         github.get_latest_release.return_value = {"published_at": None}
         self.result = RepositoryEvaluator(github).evaluate("django", "django")
@@ -34,6 +35,7 @@ class EvaluationApiTests(SimpleTestCase):
         original = deepcopy(self.result)
         first = self.get()
         self.assertEqual(first.status_code, 200)
+        self.assertEqual(set(first.json()["metrics"]), {"maintenance", "release", "archived"})
         expected = deepcopy(original)
         expected["meta"]["cached"] = False
         self.assertEqual(first.json(), expected)
@@ -140,3 +142,13 @@ class EvaluationApiTests(SimpleTestCase):
             self.assertEqual(response.status_code, 429)
             self.assertEqual(response["Retry-After"], "30")
         self.assertEqual(self.evaluate.call_count, 2)
+
+    def test_fallback_failure_and_commits_failure(self):
+        self.result["meta"]["errors"] = [
+            {"endpoint": "commits", "type": "GitHubServerError", "status": 503,
+             "rate_limit_headers": {}},
+            {"endpoint": "tag_commit", "type": "RateLimitExceeded", "status": 429,
+             "rate_limit_headers": {"Retry-After": "30"}},
+        ]
+        self.assertEqual(self.get().status_code, 429)
+        self.assertIsNone(cache.get("evaluation:v1:django/django"))

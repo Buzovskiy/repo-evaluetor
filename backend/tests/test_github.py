@@ -115,3 +115,25 @@ class GitHubClientTests(SimpleTestCase):
 
     def test_health_unchanged(self):
         self.assertEqual(self.client_class().get("/health/").json(), {"status": "ok"})
+
+    def test_tags_and_commit_endpoints(self):
+        tags = [{"name": "v1.2.3", "commit": {"sha": "abc"}}]
+        self.respond(tags, headers={"Link": '<https://api.github.com/next>; rel="next"'})
+        self.assertEqual(self.github.get_tags("a", "b"), tags)
+        self.assertEqual(self.mock.call_args.args[0], "https://api.github.com/repos/a/b/tags")
+        self.assertEqual(self.mock.call_args.kwargs["params"], {"per_page": 100, "page": 1})
+        self.mock.assert_called_once()
+        commit = {"sha": "abc", "commit": {"committer": None}}
+        self.respond(commit)
+        self.assertEqual(self.github.get_commit("a", "b", "abc"), commit)
+        self.assertEqual(self.mock.call_args.args[0], "https://api.github.com/repos/a/b/commits/abc")
+
+    def test_invalid_tag_and_commit_shapes(self):
+        for data in [{}, [None], [{"name": "v1", "commit": {}}],
+                     [{"name": "v1", "commit": {"sha": None}}]]:
+            self.respond(data)
+            with self.assertRaises(InvalidResponse):
+                self.github.get_tags("a", "b")
+        self.respond({"sha": "abc", "commit": None})
+        with self.assertRaises(InvalidResponse):
+            self.github.get_commit("a", "b", "abc")

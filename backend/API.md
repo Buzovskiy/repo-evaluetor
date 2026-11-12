@@ -37,3 +37,9 @@ DEBUG=true backend/.venv/bin/python backend/manage.py test backend/tests
 DEBUG=true backend/.venv/bin/python backend/manage.py check
 
 Tests mock the evaluator/GitHub client and require no network or credentials.
+
+The metrics are maintenance, release, and archived. Release freshness first uses
+GitHub Release published_at, then a bounded stable-tag/commit-date fallback.
+Release source and version identify the evidence; git_tag dates are commit
+committer timestamps, not publication dates. Fallback errors use tags or
+tag_commit in meta.errors and participate in the existing partial-failure policy.
