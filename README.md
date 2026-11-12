@@ -2,7 +2,7 @@
 
 A small Simfoni take-home project to help developers judge the long-term maintenance risk of adopting an open-source GitHub dependency. “Will we regret this?” means looking for signs that maintenance or delivery may have slowed, or that the repository has been retired. These are explainable prompts for review, not predictions about the next two years.
 
-The Django evaluation API is implemented. The React/Vite frontend is still starter code and is not connected to the evaluation workflow.
+The Django API and React/TypeScript frontend implement a single repository evaluation workflow, with loading, error, and partial-result states.
 
 ## How evaluation works
 
@@ -56,6 +56,7 @@ Frontend, in another terminal:
 ```bash
 cd frontend
 npm ci
+cp .env.example .env
 npm run dev
 ```
 
@@ -102,7 +103,7 @@ AI coding assistance was used to implement backend integration, evaluation logic
 
 Commit counts do not measure code quality or useful work. Tag recognition is intentionally conservative, and commit dates are imperfect release proxies. GitHub outages and rate limits can leave assessments incomplete.
 
-Possible next steps are a focused React evaluation screen, clearer presentation of data provenance, and validation of these heuristics against real adoption decisions. Broader release conventions could be supported if concrete examples justify the complexity.
+Possible next steps are browser-based accessibility checks and validation of these heuristics against real adoption decisions. Broader release conventions could be supported if concrete examples justify the complexity.
 
 ## CORS and Render configuration
 
@@ -125,3 +126,19 @@ curl -i -X OPTIONS 'http://127.0.0.1:8000/api/evaluate/?repo=django/django' \
 ```
 
 Expect `Access-Control-Allow-Origin: http://localhost:5173` and allowed methods including GET. In browser DevTools, inspect Network response headers on the API request. A disallowed origin receives no allowing header; curl itself does not enforce browser CORS rules.
+
+## Frontend configuration and checks
+
+Set `VITE_API_BASE_URL=http://127.0.0.1:8000` in `frontend/.env` for local development. React submits requests to Django's `/api/evaluate/` using Fetch; it never calls GitHub directly. A missing API URL produces a configuration message instead of falling back to a development server.
+
+For the frontend Render service, set `VITE_API_BASE_URL` to the actual HTTPS backend origin before building. Vite embeds this public value at build time: rebuild/redeploy after changes. Set the backend's `CORS_ALLOWED_ORIGINS` to the frontend origin as described above. Never put GitHub tokens or Django secrets in Vite variables.
+
+Run from `frontend/`:
+
+```bash
+npm run build
+npm run lint
+npm test
+```
+
+Build output is `frontend/dist`. Tests use Vitest, jsdom, and mocked Fetch responses; no running backend is required. The page supports mobile layouts, keyboard submission, status announcements, and explicit release-source explanations. It has no saved history or automatic retries. Real-browser visual and deployment verification remain separate checks.
