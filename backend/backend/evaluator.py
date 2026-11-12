@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import re
 from typing import Any
 
-from .github import GitHubClient, GitHubError, LatestReleaseNotFound
+from .github import GitHubClient, GitHubError, LatestReleaseNotFound, RateLimitExceeded
 
 LABELS = {
     "healthy": "No major signals detected",
@@ -85,6 +85,9 @@ class RepositoryEvaluator:
             value = "100+" if page.has_next else count
             status = "healthy" if page.has_next or count >= 10 else "warning" if count else "critical"
             maintenance = metric(status, value, "commits", f"{value} commits in the last 90 days.")
+        except RateLimitExceeded:
+            # No activity evidence yet; further requests cannot help during a limit.
+            raise
         except GitHubError as error:
             record_error("commits", error)
             maintenance = metric("unknown", None, "commits", "Recent commits could not be retrieved.")

@@ -91,13 +91,14 @@ class EvaluationApiTests(SimpleTestCase):
             (GitHubError, 502, "GITHUB_API_ERROR"),
         ]:
             with self.subTest(kind=kind):
+                cache.clear()
                 self.evaluate.side_effect = kind("secret must not appear")
-                for _ in range(2):
+                for attempt in range(2):
                     response = self.get()
                     self.assertEqual(response.status_code, status)
                     self.assertEqual(response.json(), {"error": {
                         "code": code, "message": response.json()["error"]["message"],
-                        "retry_after_seconds": None}})
+                        "retry_after_seconds": 60 if kind is RateLimitExceeded and attempt else None}})
                     self.assertNotIn("secret", response.content.decode())
                 self.assertIsNone(cache.get("evaluation:v1:django/django"))
 
@@ -141,7 +142,7 @@ class EvaluationApiTests(SimpleTestCase):
             response = self.get()
             self.assertEqual(response.status_code, 429)
             self.assertEqual(response["Retry-After"], "30")
-        self.assertEqual(self.evaluate.call_count, 2)
+        self.assertEqual(self.evaluate.call_count, 1)
 
     def test_fallback_failure_and_commits_failure(self):
         self.result["meta"]["errors"] = [
@@ -152,3 +153,16 @@ class EvaluationApiTests(SimpleTestCase):
         ]
         self.assertEqual(self.get().status_code, 429)
         self.assertIsNone(cache.get("evaluation:v1:django/django"))
+
+    def test_cooldown_expires_and_success_cache_still_works(self):
+        self.get("cached/repo")
+        self.evaluate.side_effect = RateLimitExceeded("limited", headers={"Retry-After": "60"})
+        with patch("time.time", return_value=10000):
+            self.assertEqual(self.get().status_code, 429)
+            self.assertEqual(self.get("another/repo").status_code, 429)
+            self.assertTrue(self.get("cached/repo").json()["meta"]["cached"])
+        self.assertEqual(self.evaluate.call_count, 2)
+        with patch("time.time", return_value=10061):
+            self.evaluate.side_effect = None
+            self.assertEqual(self.get().status_code, 200)
+        self.assertEqual(self.evaluate.call_count, 3)

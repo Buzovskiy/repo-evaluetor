@@ -108,17 +108,11 @@ class RepositoryEvaluatorTests(SimpleTestCase):
                    "X-RateLimit-Limit": "60", "X-RateLimit-Reset": "123"}
         self.github.get_commits.side_effect = RateLimitExceeded("limited", status=429, headers=headers)
         self.github.get_latest_release.side_effect = GitHubServerError("failed", status=503)
-        result = self.evaluate()
-        for name in ("maintenance", "release"):
-            self.assertEqual(result["metrics"][name]["status"], "unknown")
-            self.assertIsNone(result["metrics"][name]["value"])
-        self.assertIsNone(result["meta"]["commits_complete"])
-        self.assertEqual(result["meta"]["errors"], [
-            {"endpoint": "commits", "type": "RateLimitExceeded", "status": 429,
-             "rate_limit_headers": headers},
-            {"endpoint": "releases/latest", "type": "GitHubServerError", "status": 503,
-             "rate_limit_headers": {}},
-        ])
+        with self.assertRaises(RateLimitExceeded) as caught:
+            self.evaluate()
+        self.assertEqual(caught.exception.rate_limit_headers, headers)
+        self.github.get_latest_release.assert_not_called()
+        self.github.get_tags.assert_not_called()
 
     def test_missing_release_is_not_service_failure(self):
         self.github.get_latest_release.side_effect = LatestReleaseNotFound("missing", status=404)

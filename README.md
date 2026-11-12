@@ -4,6 +4,12 @@ A small Simfoni take-home project to help developers judge the long-term mainten
 
 The Django API and React/TypeScript frontend implement a single repository evaluation workflow, with loading, error, and partial-result states.
 
+## Live Demo
+
+- [React frontend — Live Demo](https://repo-evaluetor.onrender.com/)
+- [Django API health](https://api-repo-evaluetor.onrender.com/health/) — verified HTTP 200 during this review.
+- [GitHub repository](https://github.com/Buzovskiy/repo-evaluetor)
+
 ## How evaluation works
 
 | Metric | Healthy | Warning | Critical |
@@ -62,7 +68,7 @@ npm run dev
 
 Open the Vite URL printed in the terminal. The backend normally runs at http://127.0.0.1:8000.
 
-The backend includes a Gunicorn dependency and WSGI entry point. Render hostname and proxy settings remain supported, but no deployment blueprint is checked in and deployment has not been verified here.
+The backend includes a Gunicorn dependency and WSGI entry point. Render hostname and proxy settings remain supported, but no deployment blueprint is checked in and the deployed backend health endpoint was verified here; the frontend URL was supplied by the author; its deployed end-to-end flow has not been verified here.
 
 ## API
 
@@ -80,7 +86,7 @@ For example, an unavailable release metric is:
 
 Input errors return 400, missing repositories 404, rate limits 429, timeouts 504, and other upstream errors 502. One failed secondary signal remains a partial 200 assessment with `meta.errors`; failure of both commit activity and release discovery returns an upstream error. Retry information is preserved where supplied by GitHub. See [backend/API.md](backend/API.md).
 
-Successful evaluations without upstream errors are cached for 15 minutes. The cache is per process, disappears on restart, and is not shared across workers. Concurrent misses can duplicate requests. `/health/` returns `{"status":"ok"}`.
+Successful evaluations without upstream errors are cached for 15 minutes. The cache is per process, disappears on restart, and is not shared across workers. Concurrent misses can duplicate requests. Confirmed rate limits trigger a per-process cooldown using GitHub retry information (60 seconds if absent); successful cached results remain available. A commits rate limit stops further calls. A release rate limit preserves available commit evidence as partial results. `/health/` returns `{"status":"ok"}`.
 
 ## Running tests
 
@@ -95,9 +101,9 @@ Tests mock GitHub responses and require neither network access nor tokens.
 
 ## AI usage
 
-AI coding assistance was used to implement backend integration, evaluation logic, HTTP handling, tests, and documentation. The product decisions specified for this task were to remove Contributor Concentration, keep three explainable signals, and use a bounded, explicitly qualified tag fallback.
+AI coding assistance was used to implement backend integration, evaluation logic, HTTP handling, tests, and documentation. The author made product-level decisions, including removing Contributor Concentration and focusing on three explainable signals.
 
-**Author note to complete:** describe your own implementation and review contributions, and confirm the division between AI-assisted and manually authored work. That division cannot be independently verified from this workspace.
+This description does not claim a particular division of manually written code or independent manual verification.
 
 ## Known limitations and possible improvements
 
@@ -112,10 +118,10 @@ Browsers need CORS permission because the React frontend and Django backend use 
 In the **backend Render service**, set:
 
 ```dotenv
-CORS_ALLOWED_ORIGINS=https://your-frontend.onrender.com
+CORS_ALLOWED_ORIGINS=https://repo-evaluetor.onrender.com
 ```
 
-This URL is a placeholder: replace it with the actual deployed frontend HTTPS origin. `CORS_ALLOWED_ORIGINS` contains **frontend origins**; `ALLOWED_HOSTS` contains **backend hostnames**. Origins include the scheme and any non-default port, with no paths or trailing slashes. Save the environment change and redeploy/restart the service so it loads the updated configuration.
+`CORS_ALLOWED_ORIGINS` contains **frontend origins**; `ALLOWED_HOSTS` contains **backend hostnames**. Origins include the scheme and any non-default port, with no paths or trailing slashes. Save the environment change and redeploy/restart the service so it loads the updated configuration.
 
 With the backend running, verify preflight without calling GitHub:
 
@@ -142,3 +148,9 @@ npm test
 ```
 
 Build output is `frontend/dist`. Tests use Vitest, jsdom, and mocked Fetch responses; no running backend is required. The page supports mobile layouts, keyboard submission, status announcements, and explicit release-source explanations. It has no saved history or automatic retries. Real-browser visual and deployment verification remain separate checks.
+
+### Render service commands
+
+Backend root: `backend`; build: `uv sync --locked`; start: `uv run gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT`. Set `DEBUG=false`, private `DJANGO_SECRET_KEY`, backend `ALLOWED_HOSTS`, and frontend `CORS_ALLOWED_ORIGINS`.
+
+Frontend root: `frontend`; build: `npm ci && npm run build`; publish: `dist`.

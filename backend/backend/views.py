@@ -1,16 +1,24 @@
 """Read-only evaluation API; transport and assessment remain in their services."""
 
 from copy import deepcopy
+import time
 
 from django.core.cache import cache
 from django.http import JsonResponse
 
-from .api_errors import json_error, upstream_error, upstream_details
+from .api_errors import json_error, upstream_error, upstream_details, retry_seconds
 from .evaluator import RepositoryEvaluator
-from .github import GitHubError
+from .github import GitHubError, RateLimitExceeded
 from .repository_input import parse_repository
 
 CACHE_TTL = 15 * 60
+
+
+def remember_limit(headers):
+    seconds = retry_seconds(headers)
+    seconds = seconds if seconds is not None else 60
+    if seconds > 0:
+        cache.set("github:cooldown", time.time() + seconds, timeout=seconds)
 
 
 def evaluate(request):
@@ -27,11 +35,19 @@ def evaluate(request):
     result = cache.get(key)
     cached = result is not None
     if not cached:
+        deadline = cache.get("github:cooldown")
+        if deadline is not None:
+            return upstream_details("RateLimitExceeded", {"X-RateLimit-Reset": str(deadline)})
         try:
             result = RepositoryEvaluator().evaluate(owner, repo)
         except GitHubError as error:
+            if isinstance(error, RateLimitExceeded):
+                remember_limit(error.rate_limit_headers)
             return upstream_error(error)
         errors = result["meta"].get("errors", [])
+        for error in errors:
+            if error["type"] == "RateLimitExceeded":
+                remember_limit(error["rate_limit_headers"])
         # Metadata alone cannot provide an activity/release assessment.
         if (any(error["endpoint"] == "commits" for error in errors)
                 and any(error["endpoint"] in {"releases/latest", "tags", "tag_commit"} for error in errors)):
