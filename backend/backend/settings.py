@@ -1,8 +1,17 @@
 """Minimal Django configuration for the repository evaluation API."""
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+load_dotenv(BASE_DIR / ".env")
 
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 
 # A secret is required in production; allow a fixed, non-secret value for local development.
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
