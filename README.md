@@ -59,7 +59,7 @@ npm ci
 npm run dev
 ```
 
-Open the Vite URL printed in the terminal. The backend normally runs at http://127.0.0.1:8000. CORS has not been enabled for frontend integration.
+Open the Vite URL printed in the terminal. The backend normally runs at http://127.0.0.1:8000.
 
 The backend includes a Gunicorn dependency and WSGI entry point. Render hostname and proxy settings remain supported, but no deployment blueprint is checked in and deployment has not been verified here.
 
@@ -103,3 +103,25 @@ AI coding assistance was used to implement backend integration, evaluation logic
 Commit counts do not measure code quality or useful work. Tag recognition is intentionally conservative, and commit dates are imperfect release proxies. GitHub outages and rate limits can leave assessments incomplete.
 
 Possible next steps are a focused React evaluation screen, clearer presentation of data provenance, and validation of these heuristics against real adoption decisions. Broader release conventions could be supported if concrete examples justify the complexity.
+
+## CORS and Render configuration
+
+Browsers need CORS permission because the React frontend and Django backend use separate origins. The API allows `http://localhost:5173` and `http://127.0.0.1:5173` by default. Set comma-separated `CORS_ALLOWED_ORIGINS` to replace this list; whitespace and empty entries are ignored. Only `/api/` routes receive CORS headers. Credentialed requests and wildcard origins are not enabled.
+
+In the **backend Render service**, set:
+
+```dotenv
+CORS_ALLOWED_ORIGINS=https://your-frontend.onrender.com
+```
+
+This URL is a placeholder: replace it with the actual deployed frontend HTTPS origin. `CORS_ALLOWED_ORIGINS` contains **frontend origins**; `ALLOWED_HOSTS` contains **backend hostnames**. Origins include the scheme and any non-default port, with no paths or trailing slashes. Save the environment change and redeploy/restart the service so it loads the updated configuration.
+
+With the backend running, verify preflight without calling GitHub:
+
+```bash
+curl -i -X OPTIONS 'http://127.0.0.1:8000/api/evaluate/?repo=django/django' \
+  -H 'Origin: http://localhost:5173' \
+  -H 'Access-Control-Request-Method: GET'
+```
+
+Expect `Access-Control-Allow-Origin: http://localhost:5173` and allowed methods including GET. In browser DevTools, inspect Network response headers on the API request. A disallowed origin receives no allowing header; curl itself does not enforce browser CORS rules.

@@ -26,12 +26,25 @@ ALLOWED_HOSTS = [
 if render_hostname := os.environ.get("RENDER_EXTERNAL_HOSTNAME"):
     ALLOWED_HOSTS.append(render_hostname)
 
-INSTALLED_APPS = []
+INSTALLED_APPS = ["corsheaders"]
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
 ]
+
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+CORS_URLS_REGEX = r"^/api/"
+CORS_ALLOW_CREDENTIALS = False
+CORS_ALLOW_METHODS = ["GET", "OPTIONS"]
 
 ROOT_URLCONF = "backend.urls"
 WSGI_APPLICATION = "backend.wsgi.application"

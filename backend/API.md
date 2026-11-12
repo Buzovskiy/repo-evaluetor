@@ -30,7 +30,7 @@ partial service failures are not cached. Response metadata is added to a copy.
 Django's in-memory cache is per process, is not shared across workers, and is lost
 on restart. Concurrent misses may make duplicate GitHub requests. This is not
 request throttling. HTTP responses use Cache-Control: no-store so the application
-cache controls freshness. No CORS policy, authentication, or dependencies were added.
+cache controls freshness. CORS is restricted to configured frontend origins on /api/; see the root README.
 
 Run from the repository root:
 DEBUG=true backend/.venv/bin/python backend/manage.py test backend/tests
