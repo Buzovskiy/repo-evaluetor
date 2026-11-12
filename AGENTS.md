@@ -33,6 +33,20 @@ The project currently contains starter code. Inspect existing files and conventi
 - Do not claim a command, test, or deployment succeeded unless it was actually run and verified.
 - Before finishing, run relevant available checks where practical, and state what was not verified.
 
+## GitHub REST API reference
+
+- Use GitHub's official REST API OpenAPI specification as the primary reference for endpoint definitions, request parameters, response schemas, and field types: https://github.com/github/rest-api-description.
+- Prefer the stable OpenAPI 3.0 bundled descriptions under `descriptions/`; check the version of the specification when interpreting schemas.
+- Consult https://docs.github.com/en/rest for behavior not fully represented in OpenAPI, especially pagination, authentication, rate limits, response headers, and error handling.
+- For the initial repository evaluation workflow, consult these endpoints:
+  - `GET /repos/{owner}/{repo}`
+  - `GET /repos/{owner}/{repo}/commits`
+  - `GET /repos/{owner}/{repo}/releases/latest`
+- Verify required, optional, and nullable fields against the schemas. Do not assume one sample response covers all valid responses.
+- When network access is available, use real API responses to validate assumptions without treating examples as a replacement for the documented schema.
+- Handle pagination, incomplete data, missing releases, and API failures explicitly. Do not interpret missing data as zero or silently assign a risk score.
+- Keep GitHub tokens and other credentials out of source files, test fixtures, logs, and commits.
+
 ## Deliverable documentation
 
 When writing the **root** `README.md`, explicitly address all three questions in `docs/ASSIGNMENT.md`: the meaning of “will we regret this” and how it was decided, deliberately excluded scope, and transparent AI-tool usage (what AI helped with versus the author's own decisions).
