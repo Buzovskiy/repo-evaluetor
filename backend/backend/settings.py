@@ -45,3 +45,11 @@ LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
+
+# Per-process only: entries are lost on restart and are not shared by workers.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "repository-evaluations",
+    }
+}

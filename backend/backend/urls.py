@@ -2,6 +2,7 @@
 
 from django.http import JsonResponse
 from django.urls import path
+from .views import evaluate
 
 
 def health(request):
@@ -9,5 +10,6 @@ def health(request):
 
 
 urlpatterns = [
+    path("api/evaluate/", evaluate, name="evaluate"),
     path("health/", health, name="health"),
 ]
